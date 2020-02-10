@@ -10,9 +10,10 @@
 #define MAXLINE 128 //a command can have up to 128 characters, not including the null byte 
 //TODO: Add feature: user@host by reading environment variable using getenv(), if no such var exist then qsh#
 //Basic shell executing commands done. need environment, need more shell builtins (i.e history, and needs to implement uppercase tab auto-complete)
+//More features: previous command by using up arrow 
 //KNOWN BUG: when an error occured (e.g no such file), the exit command must be entered twice to exit the shell. 
 //NOT TWICE but +1 the number of error
-///BUGS: mem leak, exit error, chdir success???
+///BUGS: exit error
 void mainloop(void);
 void fatal(char *message);
 int launch_process(char **args);
@@ -63,7 +64,6 @@ int shell_cd(char **command)//if directory name is invalid or not found, it will
 			if(chdir(command[1]))
 				fatal("chdir");
 		}
-	printf("why?\n");
 	return 1;
 }
 
@@ -86,7 +86,7 @@ int execute(char **command)
 //program mainloop
 void mainloop(void)
 {
-	int return_status,count;
+	int return_status,count=0;
 	char *line;
 	char **args;
 	char *history[HISTSIZE];
@@ -102,10 +102,18 @@ void mainloop(void)
 		if(!strcmp(line,"history"))
 		{
 			print_history(history,count);
+			free(line);//prevent memory leak
+			free(args);//prevent memory leak 
 			continue;
 		}
 		if(!strcmp(line,"exit"))//if it is exit
+		{
 			clear_history(history);
+			free(line);//prevent memory leak
+			return_status=call_builtin_funcptr[0](args);//calling exit
+			free(args);//prevent memory leak
+			continue;
+		}
 		return_status=execute(args);
 		free(line);
 		free(args);
