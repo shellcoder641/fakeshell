@@ -4,16 +4,20 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
 #define DELIM " \t\r\n\a"
 #define NUMSHELLBUILTIN 2
 #define HISTSIZE 1000
+#define MAXHOSTNAME 20
+#define MAXCWD 256
 #define MAXLINE 128 //a command can have up to 128 characters, not including the null byte 
-//TODO: Add feature: user@host by reading environment variable using getenv(), if no such var exist then qsh#
-//Basic shell executing commands done. need environment, need more shell builtins (i.e history, and needs to implement uppercase tab auto-complete)
-//More features: previous command by using up arrow 
-//KNOWN BUG: when an error occured (e.g no such file), the exit command must be entered twice to exit the shell. 
-//NOT TWICE but +1 the number of error
-///BUGS: exit error
+//Basic shell executing commands done. need environment, need more shell builtins (needs to implement uppercase tab auto-complete)
+//More features: previous command by using up arrow
+//implement alias
+//working on: time and date for command history
+//Just added: support for relative path cd, need to commit, fixed exit error by changing perror("qsh") to fatal()
+//it is because the child that failed to execute needs to exit and return to the parent
+//just added, current working directory to shell prompt, colored shell prompt, history with timestamp
 void mainloop(void);
 void fatal(char *message);
 int launch_process(char **args);
@@ -24,12 +28,12 @@ int shell_exit(char **command);
 void print_history(char *history[],int count);
 void clear_history(char *history[]);
 int execute(char **command);
-
+int shell_alias(char **command);
 char *shell_builtin[]={"exit","cd"};
 int (*call_builtin_funcptr[]) (char **)={&shell_exit,&shell_cd};
 //launch shell builtins
 
-void print_history(char *history[],int count) //TO BE IMPLEMENTED: add date and time of command history
+void print_history(char *history[],int count) 
 {
 	int i=count,histcount=1;
 	do
@@ -51,22 +55,42 @@ void clear_history(char *history[])//clear history, how about flush it to a file
 		history[i]=NULL;//good practice to eliminate dangling pointers
 	}
 }
+//now this function can handle relative path
 int shell_cd(char **command)//if directory name is invalid or not found, it will do nothing
-{
-	char buf[50];
+{	
 	if(command[1]==NULL || strcmp(command[1],"~")==0)
 	{
 		if(chdir(getenv("HOME")))
 			fatal("chdir");
 	}
 	else
+	{
+		if(command[1][0]!='/')//if not absolute path
+		{
+			char *abs_path=NULL;
+			char *home=getenv("HOME");
+			abs_path=malloc(strlen(command[1])+strlen(home)+2);
+			strncpy(abs_path,home,strlen(home));
+			strncat(abs_path,"/",2);
+			strncat(abs_path,command[1],strlen(command[1]));
+			if(chdir(abs_path))
+				fatal("chdir");
+			free(abs_path);
+		}
+		else
 		{
 			if(chdir(command[1]))
 				fatal("chdir");
 		}
+	}
 	return 1;
 }
 
+int shell_alias(char **command)
+{
+	return 1;
+	//TO BE IMPLEMENTED;
+}
 //exit the shell, not the child process
 int shell_exit(char **command)
 {
@@ -87,17 +111,38 @@ int execute(char **command)
 void mainloop(void)
 {
 	int return_status,count=0;
-	char *line;
+	char *line,hostname[MAXHOSTNAME];
 	char **args;
 	char *history[HISTSIZE];
+	char *user=getenv("USER");
+	if(gethostname(hostname,MAXHOSTNAME))
+		fatal("gethostname");
 	for(int i=0;i<HISTSIZE;i++)
 		history[i]=NULL;
 	do
 	{
-		printf("qsh# ");
+		char *cwd=malloc(MAXCWD*sizeof(char));//max 256 chars 
+		getcwd(cwd,MAXCWD); 
+		printf("\033[0;31m%s\033[0;34m@\033[0;31m%s:\033[;34m%s#\033[0m ",user,hostname,cwd);
+		free(cwd);
 		line=readline();
 		args=parse_args(line);
 		history[count]=strdup(line);
+
+		// if(strstr(history[count],"-l"))
+		// {
+		char tmp[128];
+		strncpy(tmp,history[count],128);
+		time_t cur_time_t;
+		char *curtime;
+		time(&cur_time_t);//get the current time;
+		curtime=ctime(&cur_time_t);
+		history[count]=realloc(history[count],strlen(tmp)+strlen(curtime)+2);
+		strncpy(history[count],curtime,24);//excluding the newline character
+		strcat(history[count],": ");
+		strncat(history[count],tmp,128);
+		// }
+
 		count=(count+1)%HISTSIZE;//cycle around when max history size reached.
 		if(!strcmp(line,"history"))
 		{
@@ -137,14 +182,14 @@ int launch_process(char **args)
 		do
 		{
 			wpid=waitpid(pid,&child_status,WUNTRACED);
-		}while(!WIFEXITED(child_status)&&!WIFSIGNALED(child_status));
+		}while(!WIFEXITED(child_status)&&!WIFSIGNALED(child_status));//wait for child
 	}
 	else if(pid==-1)
 		fatal("fork");
 	else
 	{
-		if(execvp(args[0],args)==-1) 
-			perror("qsh");
+		if(execvp(args[0],args)==-1)
+			fatal("qsh");
 	}
 	return 1;//means success
 }
@@ -161,31 +206,6 @@ char *readline(void)//limit command to 127 chars
 		buf[strlen(buf)-1]='\0';//null-terminate the string
 	return buf;
 }
-// char *readline(void)
-// {
-// 	int bufsize=1024,pos=0,c;
-// 	char *buff=malloc(bufsize*sizeof(char));
-// 	if(!buff)
-// 		fatal("malloc");
-// 	while(1)
-// 	{
-// 		c=getchar();
-// 		if(c==EOF||c=='\n')
-// 		{
-// 			buff[pos]='\0';
-// 			return buff;
-// 		}
-// 		buff[pos]=c;
-// 		pos++;
-// 		if(pos>=bufsize)
-// 		{
-// 			bufsize+=bufsize;
-// 			buff=realloc(buff,bufsize*sizeof(char));
-// 			if(!buff)
-// 				fatal("realloc");
-// 		}
-// 	}
-// }
 
 //parse user input into separate tokens, i.e array of strings
 char **parse_args(char *command)
@@ -219,40 +239,3 @@ int main(int argc, char *argv[])
 	mainloop();
 }
 
-
-// qsh# ls
-// a.out  history.c  main.c  test.c  tmp
-// qsh# pwd
-// /root/git_projects/project_qshell
-// qsh# cd
-// chdir: Success
-//program exited.
-//wot?????????
-
-//result from running with valgrind
-// ==33541== Use of uninitialised value of size 8
-// ==33541==    at 0x109271: print_history (in /root/git_projects/project_qshell/a.out)
-// ==33541==    by 0x109515: mainloop (in /root/git_projects/project_qshell/a.out)
-// ==33541==    by 0x1097B4: main (in /root/git_projects/project_qshell/a.out)
-// ==33541== 
-// 1: ls
-// 2: pwd
-// 3: echo
-// 4: history
-// qsh# exit
-// ==33541== 
-// ==33541== HEAP SUMMARY:
-// ==33541==     in use at exit: 768 bytes in 2 blocks
-// ==33541==   total heap usage: 17 allocs, 15 frees, 5,913 bytes allocated
-// ==33541== 
-// ==33541== LEAK SUMMARY:
-// ==33541==    definitely lost: 640 bytes in 1 blocks
-// ==33541==    indirectly lost: 128 bytes in 1 blocks
-// ==33541==      possibly lost: 0 bytes in 0 blocks
-// ==33541==    still reachable: 0 bytes in 0 blocks
-// ==33541==         suppressed: 0 bytes in 0 blocks
-// ==33541== Rerun with --leak-check=full to see details of leaked memory
-// ==33541== 
-// ==33541== Use --track-origins=yes to see where uninitialised values come from
-// ==33541== For lists of detected and suppressed errors, rerun with: -s
-// ==33541== ERROR SUMMARY: 2009 errors from 4 contexts (suppressed: 0 from 0)
