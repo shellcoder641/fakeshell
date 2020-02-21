@@ -18,6 +18,12 @@
 //Just added: support for relative path cd, need to commit, fixed exit error by changing perror("qsh") to fatal()
 //it is because the child that failed to execute needs to exit and return to the parent
 //just added, current working directory to shell prompt, colored shell prompt, history with timestamp
+//Fixed the memory corruption bug by changing the parameter in the realloc call to multiply by the size of a char *
+//Need to change the dot into a pathname. The issue is that there is not enough memory allocated for history[count]
+//Tab autocomplete needs to be implemented using a trie data structure...
+//Does not parse regular expression like *
+//Currently history doesn't include options, so ls and ls -lh are the samething
+
 void mainloop(void);
 void fatal(char *message);
 int launch_process(char **args);
@@ -70,6 +76,8 @@ int shell_cd(char **command)//if directory name is invalid or not found, it will
 			char *abs_path=NULL;
 			char *home=getenv("HOME");
 			abs_path=malloc(strlen(command[1])+strlen(home)+2);
+			if(!abs_path)
+				fatal("malloc");
 			strncpy(abs_path,home,strlen(home));
 			strncat(abs_path,"/",2);
 			strncat(abs_path,command[1],strlen(command[1]));
@@ -122,26 +130,27 @@ void mainloop(void)
 	do
 	{
 		char *cwd=malloc(MAXCWD*sizeof(char));//max 256 chars 
+		if(!cwd)
+			fatal("malloc");
 		getcwd(cwd,MAXCWD); 
 		printf("\033[0;31m%s\033[0;34m@\033[0;31m%s:\033[;34m%s#\033[0m ",user,hostname,cwd);
 		free(cwd);
 		line=readline();
 		args=parse_args(line);
+		// printf("line is %s,args is %s\n",line,args[1]);
 		history[count]=strdup(line);
+		// printf("history[count] is %s\n",history[count]);
 
-		// if(strstr(history[count],"-l"))
-		// {
 		char tmp[128];
 		strncpy(tmp,history[count],128);
 		time_t cur_time_t;
 		char *curtime;
 		time(&cur_time_t);//get the current time;
 		curtime=ctime(&cur_time_t);
-		history[count]=realloc(history[count],strlen(tmp)+strlen(curtime)+2);
+		history[count]=(char *)realloc(history[count],(strlen(tmp)+strlen(curtime)+2)*sizeof(char *));
 		strncpy(history[count],curtime,24);//excluding the newline character
 		strcat(history[count],": ");
 		strncat(history[count],tmp,128);
-		// }
 
 		count=(count+1)%HISTSIZE;//cycle around when max history size reached.
 		if(!strcmp(line,"history"))
