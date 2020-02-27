@@ -5,7 +5,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <time.h>
-#include <readline/readline.h>
 #define DELIM " \t\r\n\a"
 #define NUMSHELLBUILTIN 2
 #define HISTSIZE 1000
@@ -15,6 +14,7 @@
 //Basic shell executing commands done. need environment, need more shell builtins (needs to implement uppercase tab auto-complete)
 //More features: previous command by using up arrow
 //implement alias
+//working on: time and date for command history
 //Just added: support for relative path cd, need to commit, fixed exit error by changing perror("qsh") to fatal()
 //it is because the child that failed to execute needs to exit and return to the parent
 //just added, current working directory to shell prompt, colored shell prompt, history with timestamp
@@ -22,15 +22,13 @@
 //Need to change the dot into a pathname. The issue is that there is not enough memory allocated for history[count]
 //Tab autocomplete needs to be implemented using a trie data structure...
 //Does not parse regular expression like *
-//History now contains full command
-//Added code to check if empty line is empty
-//Changed to gnu readline now have new bugs (weird bytes printed on console)
-//Fixed by adding null byte after adding the curtime into history[count]
+//Currently history doesn't include options, so ls and ls -lh are the samething
+
 void mainloop(void);
 void fatal(char *message);
 int launch_process(char **args);
 char **parse_args(char *command);
-char *my_readline(void);//unused, replaced by the better gnu readline function with more features
+char *readline(void);
 int shell_cd(char **command);
 int shell_exit(char **command);
 void print_history(char *history[],int count);
@@ -131,35 +129,29 @@ void mainloop(void)
 		history[i]=NULL;
 	do
 	{
-		char cwd[MAXCWD];//max 256 chars 
+		char *cwd=malloc(MAXCWD*sizeof(char));//max 256 chars 
+		if(!cwd)
+			fatal("malloc");
 		getcwd(cwd,MAXCWD); 
-		printf("\033[0;31m%s\033[0;34m@\033[0;31m%s:\033[;34m%s#\033[0m",user,hostname,cwd);
-		// line=my_readline();
-		line=readline(" ");//holds the line
-		if(strlen(line)==0)// if only newline is entered
-		{
-			return_status=1;
-			continue;
-		}
+		printf("\033[0;31m%s\033[0;34m@\033[0;31m%s:\033[;34m%s#\033[0m ",user,hostname,cwd);
+		free(cwd);
+		line=readline();
 		args=parse_args(line);
-		// history[count]=strdup(line);
-		//this block of code caused the bug, need to invesgitate further.
+		// printf("line is %s,args is %s\n",line,args[1]);
+		history[count]=strdup(line);
+		// printf("history[count] is %s\n",history[count]);
+
+		char tmp[128];
+		strncpy(tmp,history[count],128);
 		time_t cur_time_t;
 		char *curtime;
 		time(&cur_time_t);//get the current time;
 		curtime=ctime(&cur_time_t);
-		
-		history[count]=(char *)malloc(MAXLINE*sizeof(char *)); //buffer is big enough, but the problem still persists.
+		history[count]=(char *)realloc(history[count],(strlen(tmp)+strlen(curtime)+2)*sizeof(char *));
 		strncpy(history[count],curtime,24);//excluding the newline character
-		history[count][24]='\0';//missing this null byte causing weird characters to be printed
 		strcat(history[count],": ");
-		int i=0;
-		while(args[i]!=NULL)
-		{
-			strcat(history[count]," ");
-			strcat(history[count],args[i]);
-			i++;
-		}
+		strncat(history[count],tmp,128);
+
 		count=(count+1)%HISTSIZE;//cycle around when max history size reached.
 		if(!strcmp(line,"history"))
 		{
@@ -176,7 +168,6 @@ void mainloop(void)
 			free(args);//prevent memory leak
 			continue;
 		}
-		// printf("args[0] is %s, arg[1] is %s\n",args[0],args[1]);
 		return_status=execute(args);
 		free(line);
 		free(args);
@@ -214,8 +205,7 @@ int launch_process(char **args)
 
 //read the user input and allocate a buffer to hold the user input
 //can use readline() or fgets()
-//unused, replaced by gnu readline
-char *my_readline(void)//limit command to 127 chars
+char *readline(void)//limit command to 127 chars
 {
 	char *buf=malloc(MAXLINE*sizeof(char));
 	if(!buf)
