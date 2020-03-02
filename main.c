@@ -12,20 +12,7 @@
 #define MAXHOSTNAME 20
 #define MAXCWD 256
 #define MAXLINE 128 //a command can have up to 128 characters, not including the null byte 
-//Basic shell executing commands done. need environment, need more shell builtins (needs to implement uppercase tab auto-complete)
-//More features: previous command by using up arrow
-//implement alias
-//Just added: support for relative path cd, need to commit, fixed exit error by changing perror("qsh") to fatal()
-//it is because the child that failed to execute needs to exit and return to the parent
-//just added, current working directory to shell prompt, colored shell prompt, history with timestamp
-//Fixed the memory corruption bug by changing the parameter in the realloc call to multiply by the size of a char *
-//Need to change the dot into a pathname. The issue is that there is not enough memory allocated for history[count]
-//Tab autocomplete needs to be implemented using a trie data structure...
-//Does not parse regular expression like *
-//History now contains full command
-//Added code to check if empty line is empty
-//Changed to gnu readline now have new bugs (weird bytes printed on console)
-//Fixed by adding null byte after adding the curtime into history[count]
+
 void mainloop(void);
 void fatal(char *message);
 int launch_process(char **args);
@@ -38,8 +25,10 @@ void clear_history(char *history[]);
 int execute(char **command);
 int shell_alias(char **command);
 char *shell_builtin[]={"exit","cd"};
+int nonfatal(char *message);//used for shell built in
 int (*call_builtin_funcptr[]) (char **)={&shell_exit,&shell_cd};
 //launch shell builtins
+
 
 void print_history(char *history[],int count) 
 {
@@ -64,12 +53,18 @@ void clear_history(char *history[])//clear history, how about flush it to a file
 	}
 }
 //now this function can handle relative path
-int shell_cd(char **command)//if directory name is invalid or not found, it will do nothing
+//cannot use fatal() because it doesn't fork a child, will exit the shell instead
+int nonfatal(char *message)
+{
+	perror(message);
+	return 1;
+}
+int shell_cd(char **command)
 {	
-	if(command[1]==NULL || strcmp(command[1],"~")==0)
+	if(command[1]==NULL || !strcmp(command[1],"~"))
 	{
 		if(chdir(getenv("HOME")))
-			fatal("chdir");
+			nonfatal("chdir");
 	}
 	else
 	{
@@ -79,23 +74,23 @@ int shell_cd(char **command)//if directory name is invalid or not found, it will
 			char *home=getenv("HOME");
 			abs_path=malloc(strlen(command[1])+strlen(home)+2);
 			if(!abs_path)
-				fatal("malloc");
+				nonfatal("malloc");
 			strncpy(abs_path,home,strlen(home));
-			strncat(abs_path,"/",2);
+			strcat(abs_path,"/");
 			strncat(abs_path,command[1],strlen(command[1]));
 			if(chdir(abs_path))
-				fatal("chdir");
+				nonfatal("chdir");
 			free(abs_path);
 		}
 		else
 		{
 			if(chdir(command[1]))
-				fatal("chdir");
+				nonfatal("chdir");
 		}
 	}
 	return 1;
 }
-
+//can be read from a file so it can be pertained when the shell is active
 int shell_alias(char **command)
 {
 	return 1;
@@ -134,7 +129,6 @@ void mainloop(void)
 		char cwd[MAXCWD];//max 256 chars 
 		getcwd(cwd,MAXCWD); 
 		printf("\033[0;31m%s\033[0;34m@\033[0;31m%s:\033[;34m%s#\033[0m",user,hostname,cwd);
-		// line=my_readline();
 		line=readline(" ");//holds the line
 		if(strlen(line)==0)// if only newline is entered
 		{
@@ -142,8 +136,6 @@ void mainloop(void)
 			continue;
 		}
 		args=parse_args(line);
-		// history[count]=strdup(line);
-		//this block of code caused the bug, need to invesgitate further.
 		time_t cur_time_t;
 		char *curtime;
 		time(&cur_time_t);//get the current time;
@@ -151,19 +143,20 @@ void mainloop(void)
 		
 		history[count]=(char *)malloc(MAXLINE*sizeof(char *)); //buffer is big enough, but the problem still persists.
 		strncpy(history[count],curtime,24);//excluding the newline character
-		history[count][24]='\0';//missing this null byte causing weird characters to be printed
+		history[count][24]='\0';//missing this null byte will cause weird characters to be printed
 		strcat(history[count],": ");
 		int i=0;
 		while(args[i]!=NULL)
 		{
 			strcat(history[count]," ");
-			strcat(history[count],args[i]);
+			strncat(history[count],args[i],80);
 			i++;
 		}
 		count=(count+1)%HISTSIZE;//cycle around when max history size reached.
 		if(!strcmp(line,"history"))
 		{
 			print_history(history,count);
+			return_status=1;
 			free(line);//prevent memory leak
 			free(args);//prevent memory leak 
 			continue;
@@ -175,6 +168,11 @@ void mainloop(void)
 			return_status=call_builtin_funcptr[0](args);//calling exit
 			free(args);//prevent memory leak
 			continue;
+		}
+		if(!strcmp(line,"alias"))
+		{
+			return_status=1;
+			//to be implemented.
 		}
 		// printf("args[0] is %s, arg[1] is %s\n",args[0],args[1]);
 		return_status=execute(args);
@@ -207,7 +205,12 @@ int launch_process(char **args)
 	else
 	{
 		if(execvp(args[0],args)==-1)
-			fatal("qsh");
+		{
+			char error[140];
+			strcpy(error,"qsh: ");
+			strncat(error,args[0],80);
+			fatal(error);
+		}
 	}
 	return 1;//means success
 }
