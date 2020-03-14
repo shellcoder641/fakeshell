@@ -1,34 +1,32 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <time.h>
-#include <readline/readline.h>
-#define DELIM " \t\r\n\a"
-#define NUMSHELLBUILTIN 2
-#define HISTSIZE 1000
-#define MAXHOSTNAME 20
-#define MAXCWD 256
-#define MAXLINE 128 //a command can have up to 128 characters, not including the null byte 
+#include "shell_hdr.h"
 
-void mainloop(void);
-void fatal(char *message);
-int launch_process(char **args);
-char **parse_args(char *command);
-char *my_readline(void);//unused, replaced by the better gnu readline function with more features
-int shell_cd(char **command);
-int shell_exit(char **command);
-void print_history(char *history[],int count);
-void clear_history(char *history[]);
-int execute(char **command);
-int shell_alias(char **command);
-char *shell_builtin[]={"exit","cd"};
-int nonfatal(char *message);//used for shell built in
-int (*call_builtin_funcptr[]) (char **)={&shell_exit,&shell_cd};
-//launch shell builtins
+//these definitions and headers can go into a separate header file.
+char *all_exe[10000];//this size must be hardcoded, can't dynamically allocate a global variable
+sigjmp_buf jumpbuf;
+//https://stackoverflow.com/questions/16828378/readline-get-a-new-prompt-on-sigint
+//Fixed the ctrl-c issue by using longjmp
+//HANDLED ctrl-z but needs to know which child has stopped to implement fg and resume that child
+char **cmd_completion(const char *cmd, int st, int ed)
+{
+	return rl_completion_matches(cmd,cmd_gen);
+}
 
+char *cmd_gen(const char *cmd,int state)
+{
+	static int i,len;
+	char *name;
+	if(!state)
+	{
+		i=0;
+		len=strlen(cmd);
+	}
+	while(name=all_exe[i++])
+	{
+		if(!strncmp(name,cmd,len))
+			return strdup(name);
+	}
+	return NULL;
+}
 
 void print_history(char *history[],int count) 
 {
@@ -44,7 +42,7 @@ void print_history(char *history[],int count)
 	}while(i!=count);
 }
 
-void clear_history(char *history[])//clear history, how about flush it to a file called qsh.hist? (TO BE IMPLEMENTED)
+void my_clear_history(char *history[])//clear history, how about flush it to a file called qsh.hist? (TO BE IMPLEMENTED)
 {
 	for(int i=0;i<HISTSIZE;i++)
 	{
@@ -112,74 +110,38 @@ int execute(char **command)
 	return launch_process(command);
 }
 
-//program mainloop
-void mainloop(void)
+int build_exe_list(int loc,char *dir)
 {
-	int return_status,count=0;
-	char *line,hostname[MAXHOSTNAME];
-	char **args;
-	char *history[HISTSIZE];
-	char *user=getenv("USER");
-	if(gethostname(hostname,MAXHOSTNAME))
-		fatal("gethostname");
-	for(int i=0;i<HISTSIZE;i++)
-		history[i]=NULL;
-	do
+	DIR *de;
+	struct dirent *dp;
+	de=opendir(dir);
+	int i=loc;
+	if(de==NULL)
+		fatal("opendir");
+	while(dp=readdir(de))
 	{
-		char cwd[MAXCWD];//max 256 chars 
-		getcwd(cwd,MAXCWD); 
-		printf("\033[0;31m%s\033[0;34m@\033[0;31m%s:\033[;34m%s#\033[0m",user,hostname,cwd);
-		line=readline(" ");//holds the line
-		if(strlen(line)==0)// if only newline is entered
+		if(strcmp(dp->d_name,".")&&strcmp(dp->d_name,".."))
 		{
-			return_status=1;
-			continue;
-		}
-		args=parse_args(line);
-		time_t cur_time_t;
-		char *curtime;
-		time(&cur_time_t);//get the current time;
-		curtime=ctime(&cur_time_t);
-		
-		history[count]=(char *)malloc(MAXLINE*sizeof(char *)); //buffer is big enough, but the problem still persists.
-		strncpy(history[count],curtime,24);//excluding the newline character
-		history[count][24]='\0';//missing this null byte will cause weird characters to be printed
-		strcat(history[count],": ");
-		int i=0;
-		while(args[i]!=NULL)
-		{
-			strcat(history[count]," ");
-			strncat(history[count],args[i],80);
+			all_exe[i]=strdup(dp->d_name);
 			i++;
 		}
-		count=(count+1)%HISTSIZE;//cycle around when max history size reached.
-		if(!strcmp(line,"history"))
-		{
-			print_history(history,count);
-			return_status=1;
-			free(line);//prevent memory leak
-			free(args);//prevent memory leak 
-			continue;
-		}
-		if(!strcmp(line,"exit"))//if it is exit
-		{
-			clear_history(history);
-			free(line);//prevent memory leak
-			return_status=call_builtin_funcptr[0](args);//calling exit
-			free(args);//prevent memory leak
-			continue;
-		}
-		if(!strcmp(line,"alias"))
-		{
-			return_status=1;
-			//to be implemented.
-		}
-		// printf("args[0] is %s, arg[1] is %s\n",args[0],args[1]);
-		return_status=execute(args);
-		free(line);
-		free(args);
-	}while(return_status);
+	}
+	closedir(de);
+	return i;
 }
+
+//handle control-c
+void int_handler(int dummy)
+{
+	write(1,"\n",1);
+	siglongjmp(jumpbuf,1);
+}
+
+// void stop_handler(int dummy)
+// {
+// 	write(1,"\n",1);
+// 	siglongjmp(jumpbuf,1);
+// }
 //print an error message then exit
 void fatal(char *message)
 {
@@ -187,18 +149,30 @@ void fatal(char *message)
 	exit(EXIT_FAILURE);
 }
 
-//fork and exec a process
+//fork and exec a launch_process
 int launch_process(char **args)
-{
-	pid_t pid,wpid;
+{																			
+	pid_t pid;
 	int child_status;
 	pid=fork();
 	if(pid)
 	{
-		do
+		waitpid(pid,&child_status,WUNTRACED);
+		while(!WIFEXITED(child_status)&&!WIFSIGNALED(child_status))
 		{
-			wpid=waitpid(pid,&child_status,WUNTRACED);
-		}while(!WIFEXITED(child_status)&&!WIFSIGNALED(child_status));//wait for child
+			if(WIFSTOPPED(child_status))
+				printf("child %d is stopped!\n",pid);
+			waitpid(pid,&child_status,WUNTRACED);
+		}
+		// do
+		// {
+		// 	if(WIFSTOPPED(child_status))
+		// 	{
+		// 		printf("child %d is stopped!\n",pid);
+		// 	}
+		// 	waitpid(pid,&child_status,WUNTRACED);
+
+		// }while(!WIFEXITED(child_status)&&!WIFSIGNALED(child_status));//wait for child
 	}
 	else if(pid==-1)
 		fatal("fork");
@@ -207,26 +181,13 @@ int launch_process(char **args)
 		if(execvp(args[0],args)==-1)
 		{
 			char error[140];
-			strcpy(error,"qsh: ");
+			strcpy(error,"fsh: ");
 			strncat(error,args[0],80);
 			fatal(error);
 		}
+		
 	}
 	return 1;//means success
-}
-
-//read the user input and allocate a buffer to hold the user input
-//can use readline() or fgets()
-//unused, replaced by gnu readline
-char *my_readline(void)//limit command to 127 chars
-{
-	char *buf=malloc(MAXLINE*sizeof(char));
-	if(!buf)
-		fatal("malloc");
-	fgets(buf,MAXLINE,stdin);
-	if(buf[strlen(buf)-1]=='\n')
-		buf[strlen(buf)-1]='\0';//null-terminate the string
-	return buf;
 }
 
 //parse user input into separate tokens, i.e array of strings
@@ -254,6 +215,103 @@ char **parse_args(char *command)
 	}
 	tokens[i]='\0';//terminate line string
 	return tokens;
+}
+
+//program mainloop
+void mainloop(void)
+{
+	int return_status,count=0,loc=0;
+	char *line,hostname[MAXHOSTNAME];
+	char **args;
+	char *history[HISTSIZE];
+	char *bin_locations[]={"/bin","/usr/bin","/usr/local/sbin","/sbin","/usr/sbin","/usr/local/sbin"};
+	int numloc=sizeof(bin_locations)/sizeof(bin_locations[0]);//total number of ptr/ptr size
+	for(int i=0;i<numloc;i++)
+	{
+		loc=build_exe_list(loc,bin_locations[i]);
+	}
+	char *user=getenv("USER");
+	if(gethostname(hostname,MAXHOSTNAME))
+		fatal("gethostname");
+	for(int i=0;i<HISTSIZE;i++)
+		history[i]=NULL;
+	char cwd[MAXCWD];//max 64 chars 
+	getcwd(cwd,MAXCWD); 
+	char prompt[MAXPROMPT];
+	snprintf(prompt,MAXPROMPT,"\033[0;31m%s@%s:\033[;34m%s#\033[0m ",user,hostname,cwd);
+	struct sigaction sighandler;
+	sighandler.sa_handler=int_handler;
+	sigaction(SIGINT,&sighandler,NULL);
+	sigaction(SIGTSTP,&sighandler,NULL);
+	// signal(SIGTSTP,&stop_handler);
+	do
+	{
+		rl_attempted_completion_function=cmd_completion;
+		while(sigsetjmp(jumpbuf,1));
+		line=readline(prompt);//holds the line
+		
+		if(strlen(line)==0)// if only newline is entered
+		{
+			return_status=1;
+			continue;
+		}
+		args=parse_args(line);
+		time_t cur_time_t;
+		char *curtime;
+		time(&cur_time_t);//get the current time;
+		curtime=ctime(&cur_time_t);
+		
+		history[count]=(char *)malloc(MAXLINE*sizeof(char *)); 
+		strncpy(history[count],curtime,24);//excluding the newline character
+		history[count][24]='\0';//missing this null byte will cause weird characters to be printed
+		strcat(history[count],": ");
+		int i=0;
+		char full_cmd[128];
+		while(args[i]!=NULL)
+		{
+			if(i==0)
+				strcpy(full_cmd,args[i]);
+			else
+			{
+				strcat(full_cmd," ");
+				strcpy(full_cmd,args[i]);
+			}
+			strcat(history[count]," ");
+			strncat(history[count],args[i],80);
+			i++;
+		}
+		add_history(full_cmd);
+		count=(count+1)%HISTSIZE;//cycle around when max history size reached.
+		if(!strcmp(line,"history"))
+		{
+			print_history(history,count);
+			return_status=1;
+			free(line);//prevent memory leak
+			free(args);//prevent memory leak 
+			continue;
+		}
+		if(!strcmp(line,"exit"))//if it is exit
+		{
+			my_clear_history(history);
+			free(line);//prevent memory leak
+			return_status=call_builtin_funcptr[0](args);//calling exit
+			free(args);//prevent memory leak
+			continue;
+		}
+		if(!strcmp(line,"alias"))
+		{
+			return_status=1;
+			//to be implemented.
+		}
+		else
+		{
+			return_status=execute(args);
+			free(line);
+			free(args);
+		}
+
+	}while(return_status);
+
 }
 
 int main(int argc, char *argv[])
