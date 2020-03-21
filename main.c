@@ -1,11 +1,68 @@
 #include "shell_hdr.h"
-
-//these definitions and headers can go into a separate header file.
-char *all_exe[10000];//this size must be hardcoded, can't dynamically allocate a global variable
+Node *myLL=NULL;
+char *all_exe[10000];
 sigjmp_buf jumpbuf;
-//https://stackoverflow.com/questions/16828378/readline-get-a-new-prompt-on-sigint
-//Fixed the ctrl-c issue by using longjmp
-//HANDLED ctrl-z but needs to know which child has stopped to implement fg and resume that child
+static int his_ctr=0;
+static int hislinenum=1;
+
+void LL_print(Node *myLL)
+{
+	Node *p=myLL;
+	if(p!=NULL)
+	{
+		LL_print(p->next);
+		printf("%d:  %s\n",hislinenum,p->cmd);
+		hislinenum++;
+	}
+}
+
+void LL_delete_last(void)
+{
+	Node *p=myLL;
+	while(p->next->next!=NULL)
+	{
+		p=p->next;
+	}
+	free(p->next);
+	p->next=NULL;
+	hislinenum=1;//reset hislinenum
+}
+
+void LL_insert(char *cmd)
+{
+	his_ctr++;
+	if(his_ctr>HISTSIZE)//history limit reaches
+		LL_delete_last();
+	Node *c=(Node *)malloc(sizeof(Node));
+	strncpy(c->cmd,cmd,MAXLINE);
+	c->next=myLL;
+	myLL=c;
+}
+
+void LL_free(void)
+{
+	Node *p;
+	while(myLL!=NULL)
+	{
+		p=myLL;
+		myLL=myLL->next;
+		free(p);
+	}
+	myLL=NULL;
+}
+
+void LL_to_file(FILE *fp,Node *myLL)
+{
+	Node *p=myLL;
+	if(p!=NULL)
+	{
+		LL_to_file(fp,p->next);
+		fputs(p->cmd,fp);
+		fputs("\n",fp);
+	}
+
+}
+
 char **cmd_completion(const char *cmd, int st, int ed)
 {
 	return rl_completion_matches(cmd,cmd_gen);
@@ -28,29 +85,6 @@ char *cmd_gen(const char *cmd,int state)
 	return NULL;
 }
 
-void print_history(char *history[],int count) 
-{
-	int i=count,histcount=1;
-	do
-	{
-		if(history[i])
-		{
-			printf("%d: %s\n",histcount,history[i]);
-			histcount++;
-		}
-		i=(i+1)%HISTSIZE;
-	}while(i!=count);
-}
-
-void my_clear_history(char *history[])//clear history, how about flush it to a file called qsh.hist? (TO BE IMPLEMENTED)
-{
-	for(int i=0;i<HISTSIZE;i++)
-	{
-		free(history[i]);
-		history[i]=NULL;//good practice to eliminate dangling pointers
-	}
-}
-//now this function can handle relative path
 //cannot use fatal() because it doesn't fork a child, will exit the shell instead
 int nonfatal(char *message)
 {
@@ -88,12 +122,7 @@ int shell_cd(char **command)
 	}
 	return 1;
 }
-//can be read from a file so it can be pertained when the shell is active
-int shell_alias(char **command)
-{
-	return 1;
-	//TO BE IMPLEMENTED;
-}
+
 //exit the shell, not the child process
 int shell_exit(char **command)
 {
@@ -130,18 +159,13 @@ int build_exe_list(int loc,char *dir)
 	return i;
 }
 
-//handle control-c
-void int_handler(int dummy)
+//handle control-c and control-z
+void sig_handler(int dummy)
 {
 	write(1,"\n",1);
 	siglongjmp(jumpbuf,1);
 }
 
-// void stop_handler(int dummy)
-// {
-// 	write(1,"\n",1);
-// 	siglongjmp(jumpbuf,1);
-// }
 //print an error message then exit
 void fatal(char *message)
 {
@@ -160,19 +184,8 @@ int launch_process(char **args)
 		waitpid(pid,&child_status,WUNTRACED);
 		while(!WIFEXITED(child_status)&&!WIFSIGNALED(child_status))
 		{
-			if(WIFSTOPPED(child_status))
-				printf("child %d is stopped!\n",pid);
 			waitpid(pid,&child_status,WUNTRACED);
 		}
-		// do
-		// {
-		// 	if(WIFSTOPPED(child_status))
-		// 	{
-		// 		printf("child %d is stopped!\n",pid);
-		// 	}
-		// 	waitpid(pid,&child_status,WUNTRACED);
-
-		// }while(!WIFEXITED(child_status)&&!WIFSIGNALED(child_status));//wait for child
 	}
 	else if(pid==-1)
 		fatal("fork");
@@ -220,10 +233,9 @@ char **parse_args(char *command)
 //program mainloop
 void mainloop(void)
 {
-	int return_status,count=0,loc=0;
+	int return_status,loc=0;
 	char *line,hostname[MAXHOSTNAME];
 	char **args;
-	char *history[HISTSIZE];
 	char *bin_locations[]={"/bin","/usr/bin","/usr/local/sbin","/sbin","/usr/sbin","/usr/local/sbin"};
 	int numloc=sizeof(bin_locations)/sizeof(bin_locations[0]);//total number of ptr/ptr size
 	for(int i=0;i<numloc;i++)
@@ -233,40 +245,42 @@ void mainloop(void)
 	char *user=getenv("USER");
 	if(gethostname(hostname,MAXHOSTNAME))
 		fatal("gethostname");
-	for(int i=0;i<HISTSIZE;i++)
-		history[i]=NULL;
-	char cwd[MAXCWD];//max 64 chars 
+
+	if(access(HISTFILENAME,F_OK)!=-1)//file exist
+	{
+		FILE *fp=fopen(HISTFILENAME,"r");
+		if(fp==NULL)
+			fatal("fopen");
+		char cmds[MAXLINE];
+		while(fgets(cmds,MAXLINE,fp))//read from file line by line
+		{
+			strtok(cmds,"\n");
+			add_history(cmds);
+			LL_insert(cmds);
+		}
+		fclose(fp);
+	}
+	char cwd[MAXCWD];
 	getcwd(cwd,MAXCWD); 
 	char prompt[MAXPROMPT];
 	snprintf(prompt,MAXPROMPT,"\033[0;31m%s@%s:\033[;34m%s#\033[0m ",user,hostname,cwd);
 	struct sigaction sighandler;
-	sighandler.sa_handler=int_handler;
+	sighandler.sa_handler=sig_handler;
 	sigaction(SIGINT,&sighandler,NULL);
 	sigaction(SIGTSTP,&sighandler,NULL);
-	// signal(SIGTSTP,&stop_handler);
 	do
 	{
 		rl_attempted_completion_function=cmd_completion;
 		while(sigsetjmp(jumpbuf,1));
 		line=readline(prompt);//holds the line
-		
-		if(strlen(line)==0)// if only newline is entered
+		if(strlen(line)==0)//if only newline is entered
 		{
 			return_status=1;
 			continue;
 		}
 		args=parse_args(line);
-		time_t cur_time_t;
-		char *curtime;
-		time(&cur_time_t);//get the current time;
-		curtime=ctime(&cur_time_t);
-		
-		history[count]=(char *)malloc(MAXLINE*sizeof(char *)); 
-		strncpy(history[count],curtime,24);//excluding the newline character
-		history[count][24]='\0';//missing this null byte will cause weird characters to be printed
-		strcat(history[count],": ");
 		int i=0;
-		char full_cmd[128];
+		char full_cmd[MAXLINE];
 		while(args[i]!=NULL)
 		{
 			if(i==0)
@@ -274,37 +288,37 @@ void mainloop(void)
 			else
 			{
 				strcat(full_cmd," ");
-				strcpy(full_cmd,args[i]);
+				strcat(full_cmd,args[i]);
 			}
-			strcat(history[count]," ");
-			strncat(history[count],args[i],80);
 			i++;
 		}
-		add_history(full_cmd);
-		count=(count+1)%HISTSIZE;//cycle around when max history size reached.
 		if(!strcmp(line,"history"))
 		{
-			print_history(history,count);
+			LL_insert("history");
+			LL_print(myLL);
 			return_status=1;
 			free(line);//prevent memory leak
 			free(args);//prevent memory leak 
 			continue;
 		}
-		if(!strcmp(line,"exit"))//if it is exit
+
+		if(!strcmp(line,"exit"))//if it is exit 
 		{
-			my_clear_history(history);
 			free(line);//prevent memory leak
 			return_status=call_builtin_funcptr[0](args);//calling exit
 			free(args);//prevent memory leak
+			FILE *fp=fopen(HISTFILENAME,"w");
+			if(fp==NULL)
+				fatal("fopen");
+			LL_to_file(fp,myLL);
+			LL_free();
+			fclose(fp);
 			continue;
-		}
-		if(!strcmp(line,"alias"))
-		{
-			return_status=1;
-			//to be implemented.
 		}
 		else
 		{
+			add_history(full_cmd); //Point of change here
+			LL_insert(full_cmd);//add cmd to myLL (only command)
 			return_status=execute(args);
 			free(line);
 			free(args);
