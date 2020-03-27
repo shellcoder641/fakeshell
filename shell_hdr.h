@@ -17,7 +17,7 @@
 #define MAXCWD 64
 #define MAXPROMPT 256
 #define MAXLINE 128
-#define HISTFILENAME "fsh.hist"
+#define HISTFILENAME ".fsh_hist"
 struct LL
 {
 	char cmd[MAXLINE];
@@ -25,7 +25,7 @@ struct LL
 };
 typedef struct LL Node;
 
-void mainloop(void);
+void mainloop(char *argv);
 void fatal(char *message);
 int launch_process(char **args);
 char **parse_args(char *command);
