@@ -10,6 +10,14 @@
 #include <readline/history.h>
 #include <signal.h>
 #include <setjmp.h>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
+#include <openssl/err.h>
+#include <sys/socket.h> 
+#include <arpa/inet.h> 
+#include <netinet/in.h> 
 #define DELIM " \t\r\n\a"
 #define NUMSHELLBUILTIN 2
 #define HISTSIZE 2000
@@ -18,6 +26,7 @@
 #define MAXPROMPT 256
 #define MAXLINE 128
 #define HISTFILENAME ".fsh_hist"
+#define PORT 6789
 struct LL
 {
 	char cmd[MAXLINE];
@@ -43,3 +52,5 @@ void LL_insert(char *cmd);
 void LL_delete_last(void);
 void LL_free(void);
 void LL_print(Node *myLL);
+void opensslError(void);
+void send_data(char *file);
